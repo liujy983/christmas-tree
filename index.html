@@ -1,0 +1,493 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="description" content="一个可交互的粉色圣诞树动画：点击绽放烟花、移动鼠标转动视角，支持电脑与手机（Safari/Chrome）浏览器。">
+  <title>圣诞树 · Merry Christmas</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; overflow: hidden; background: #0a0308; }
+    body {
+      font-family: "Segoe UI", "PingFang SC", system-ui, sans-serif;
+      -webkit-tap-highlight-color: transparent;
+      -webkit-user-select: none; user-select: none;
+      touch-action: none;
+    }
+    canvas { display: block; touch-action: none; }
+    #hint {
+      position: fixed; left: 50%; bottom: 3.2%; transform: translateX(-50%);
+      color: rgba(255, 210, 232, 0.6); font-size: 13px; letter-spacing: 3px;
+      pointer-events: none; user-select: none; white-space: nowrap;
+      animation: hintPulse 3.2s ease-in-out infinite;
+    }
+    @keyframes hintPulse { 0%, 100% { opacity: .4; } 50% { opacity: .95; } }
+    @media (prefers-reduced-motion: reduce) { #hint { animation: none; } }
+  </style>
+</head>
+<body>
+  <canvas id="c"></canvas>
+  <div id="hint">点击屏幕绽放烟花 · 移动鼠标可转动视角</div>
+  <script>
+  (function () {
+    'use strict';
+
+    const canvas = document.getElementById('c');
+    const ctx = canvas.getContext('2d');
+    const TAU = Math.PI * 2;
+
+    let W = 0, H = 0, dpr = 1, focal = 760;
+    let camY = -1;
+    const CAM_D = 34;
+
+    let treePoints = [], orbitPoints = [], sparkles = [], petals = [], snows = [], meteors = [], bursts = [];
+    const sprites = [];
+
+    const PALETTE = [
+      [255, 105, 180], [255, 182, 193], [255, 240, 245],
+      [255, 20, 147], [220, 130, 220], [255, 140, 200]
+    ];
+
+    const reducedMotion = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+    const rand = (max, min = 0) => min + Math.random() * (max - min);
+    const easeOutCubic = t => 1 - Math.pow(1 - t, 3);
+
+    function edgePos() {
+      const e = Math.random();
+      if (e < 0.25) return [rand(W * 1.2, -W * 0.1), rand(-H * 0.12, -H * 0.02)];
+      if (e < 0.5)  return [rand(W * 1.2, -W * 0.1), rand(H * 1.12, H * 1.02)];
+      if (e < 0.75) return [rand(-W * 0.12, -W * 0.02), rand(H * 1.2, -H * 0.2)];
+      return [rand(W * 1.02, W * 1.12), rand(H * 1.2, -H * 0.2)];
+    }
+
+    function makeSprite(rgb) {
+      const s = 64, cv = document.createElement('canvas');
+      cv.width = cv.height = s;
+      const g = cv.getContext('2d');
+      const grad = g.createRadialGradient(s / 2, s / 2, 0, s / 2, s / 2, s / 2);
+      grad.addColorStop(0, 'rgba(255,255,255,1)');
+      grad.addColorStop(0.13, `rgba(${rgb[0]},${rgb[1]},${rgb[2]},0.95)`);
+      grad.addColorStop(0.38, `rgba(${rgb[0]},${rgb[1]},${rgb[2]},0.3)`);
+      grad.addColorStop(1, `rgba(${rgb[0]},${rgb[1]},${rgb[2]},0)`);
+      g.fillStyle = grad;
+      g.fillRect(0, 0, s, s);
+      return cv;
+    }
+
+    function buildScene() {
+      treePoints = [];
+      const total = 7200, strings = 3, turns = 27;
+      for (let i = 0; i < total; i++) {
+        const st = i % strings;
+        const t = Math.floor(i / strings) / (total / strings);
+        const radius = 6.9 * Math.pow(1 - t, 0.85) + 0.45;
+        const ang = t * turns * TAU + st * TAU / strings;
+        const j = 0.14;
+        const ep = edgePos();
+        const ornament = Math.random() < 0.035;
+        treePoints.push({
+          x: Math.cos(ang) * radius + rand(j, -j),
+          y: -9 + t * 15.2 + rand(j, -j),
+          z: Math.sin(ang) * radius + rand(j, -j),
+          t, c: Math.floor(Math.random() * PALETTE.length),
+          base: ornament ? rand(0.9, 1.25) : rand(0.15, 0.3),
+          phase: rand(TAU),
+          fade: t > 0.9 ? 1 - (t - 0.9) / 0.1 * 0.6 : 1,
+          sx: ep[0], sy: ep[1]
+        });
+      }
+
+      orbitPoints = [];
+      for (let i = 0; i < 520; i++) {
+        orbitPoints.push({
+          a0: rand(TAU), r: rand(7.6, 2.2), y: rand(5.5, -8.5),
+          spd: rand(0.9, 0.25) * (Math.random() < 0.5 ? -1 : 1),
+          ws: rand(1.2, 0.3), ph: rand(TAU),
+          c: Math.floor(Math.random() * PALETTE.length), size: rand(0.34, 0.14)
+        });
+      }
+
+      sparkles = [];
+      for (let i = 0; i < 150; i++) {
+        sparkles.push({
+          x: rand(W, -W * 0.1), y: rand(H, -H * 0.2),
+          r: rand(30, 6), speed: rand(0.6, 0.12),
+          drift: rand(TAU), alpha: rand(0.3, 0.06)
+        });
+      }
+
+      petals = [];
+      for (let i = 0; i < 90; i++) {
+        petals.push({
+          x: rand(W), y: rand(H), r: rand(4.5, 1.8), sp: rand(1.5, 0.4),
+          sw: rand(TAU), rot: rand(TAU), rs: rand(0.05, -0.05)
+        });
+      }
+
+      snows = [];
+      for (let i = 0; i < 70; i++) {
+        snows.push({ x: rand(W), y: rand(H), r: rand(2.6, 0.7), sp: rand(1.1, 0.3), sw: rand(TAU), ph: rand(TAU) });
+      }
+
+      meteors = [];
+      for (let i = 0; i < 4; i++) {
+        meteors.push({
+          t0: rand(9), dur: 1.1,
+          x0: rand(W * 0.85, W * 0.2), y0: rand(H * 0.25, -H * 0.1),
+          dx: rand(-0.42, -0.24) * W, dy: rand(0.45, 0.28) * H
+        });
+      }
+    }
+
+    function resize() {
+      W = window.innerWidth;
+      H = window.innerHeight;
+      dpr = Math.min(window.devicePixelRatio || 1, 2);
+      canvas.width = Math.floor(W * dpr);
+      canvas.height = Math.floor(H * dpr);
+      canvas.style.width = W + 'px';
+      canvas.style.height = H + 'px';
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      focal = Math.max(760, H * 1.3);
+      buildScene();
+    }
+
+    function project(x, y, z, angle) {
+      const ca = Math.cos(angle), sa = Math.sin(angle);
+      const xr = x * ca - z * sa;
+      const zr = x * sa + z * ca;
+      const scale = focal / (CAM_D - zr);
+      return { x: W / 2 + xr * scale, y: H / 2 - (y - camY) * scale, scale, z: zr };
+    }
+
+    function drawBackground(time, dt) {
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.globalAlpha = 1;
+      const g = ctx.createRadialGradient(W / 2, H * 0.45, 0, W / 2, H * 0.45, Math.max(W, H) * 0.75);
+      g.addColorStop(0, '#2a0d24');
+      g.addColorStop(0.5, '#150616');
+      g.addColorStop(1, '#080209');
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, W, H);
+
+      ctx.globalCompositeOperation = 'lighter';
+      for (let i = 0; i < sparkles.length; i++) {
+        const f = sparkles[i];
+        f.y -= f.speed * dt * 60;
+        f.x += Math.sin(f.drift + f.y * 0.008) * 0.4;
+        if (f.y < -f.r) { f.y = H + f.r; f.x = rand(W, -W * 0.1); }
+        const size = f.r * 2;
+        const flick = 0.7 + 0.3 * Math.sin(time * 1.2 + f.drift);
+        const flare = Math.pow(Math.max(0, Math.sin(time * 0.7 + f.drift * 3)), 12);
+        ctx.globalAlpha = Math.min(1, f.alpha * (flick + flare));
+        ctx.drawImage(sprites[0], f.x - size / 2, f.y - size / 2, size, size);
+      }
+    }
+
+    function drawMeteors(time) {
+      ctx.globalCompositeOperation = 'lighter';
+      for (let i = 0; i < meteors.length; i++) {
+        const m = meteors[i];
+        const ph = (time + m.t0) % 9;
+        if (ph > m.dur) continue;
+        const k = ph / m.dur;
+        const x = m.x0 + m.dx * k;
+        const y = m.y0 + m.dy * k;
+        const tailX = x - m.dx * 0.12;
+        const tailY = y - m.dy * 0.12;
+        const a = Math.sin(k * Math.PI);
+        const lg = ctx.createLinearGradient(tailX, tailY, x, y);
+        lg.addColorStop(0, 'rgba(255,105,180,0)');
+        lg.addColorStop(1, `rgba(255,220,240,${0.9 * a})`);
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = lg;
+        ctx.lineWidth = 2.2;
+        ctx.beginPath();
+        ctx.moveTo(tailX, tailY);
+        ctx.lineTo(x, y);
+        ctx.stroke();
+        const sz = 16 * a;
+        ctx.globalAlpha = a;
+        ctx.drawImage(sprites[0], x - sz / 2, y - sz / 2, sz, sz);
+      }
+    }
+
+    function drawGroundGlow(time) {
+      const p = project(0, -10.2, 0, 0);
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.translate(W / 2, p.y);
+      ctx.scale(1, 0.17);
+      const pulse = 1 + 0.14 * Math.sin(time * 1.6);
+      const R = focal * 0.44 * pulse;
+      const g = ctx.createRadialGradient(0, 0, 0, 0, 0, R);
+      g.addColorStop(0, 'rgba(255,120,190,0.36)');
+      g.addColorStop(0.45, 'rgba(255,60,150,0.13)');
+      g.addColorStop(1, 'rgba(255,40,120,0)');
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(0, 0, R, 0, TAU);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    function drawTree(time, angle, intro) {
+      ctx.globalCompositeOperation = 'lighter';
+      const breathe = 1 + 0.07 * Math.sin(time * 0.9);
+      const heartbeat = 0.9 + 0.1 * Math.pow(Math.max(0, Math.sin(time * 1.8)), 6);
+      for (let i = 0; i < treePoints.length; i++) {
+        const pt = treePoints[i];
+        const p = project(pt.x * breathe, pt.y, pt.z * breathe, angle);
+        const px = W / 2 + (p.x - W / 2) * intro;
+        const py = H / 2 + (p.y - H / 2) * intro;
+        let cx = pt.sx + (px - pt.sx) * intro;
+        let cy = pt.sy + (py - pt.sy) * intro;
+        const drift = (1 - intro) * 6;
+        cx += Math.sin(time * 2.5 + pt.phase) * drift;
+        cy += Math.cos(time * 2.1 + pt.phase) * drift;
+
+        let depth = (p.z + 8) / 15;
+        depth = Math.min(1, Math.max(0, depth));
+        const twinkle = 0.5 + 0.5 * Math.sin(time * 4 + pt.phase);
+        const wave = 0.5 + 0.5 * Math.sin(time * 3.5 - pt.t * 26);
+        const spark = Math.pow(Math.max(0, Math.sin(time * 2.2 + pt.phase * 2)), 16);
+        const glow = (0.4 + 0.35 * twinkle + 0.45 * wave * wave + 0.6 * spark) * heartbeat;
+        let size = pt.base * p.scale * (0.8 + 0.4 * twinkle + 0.3 * wave + 0.5 * spark);
+        if (size < 1) size = 1;
+        ctx.globalAlpha = Math.min(1, glow * (0.4 + 0.6 * depth) * pt.fade * (0.4 + 0.6 * intro));
+        ctx.drawImage(sprites[pt.c], cx - size / 2, cy - size / 2, size, size);
+      }
+    }
+
+    function drawOrbits(time, angle) {
+      ctx.globalCompositeOperation = 'lighter';
+      for (let i = 0; i < orbitPoints.length; i++) {
+        const o = orbitPoints[i];
+        const a = o.a0 + time * o.spd;
+        const yy = o.y + Math.sin(time * o.ws + o.ph) * 0.6;
+        const p = project(Math.cos(a) * o.r, yy, Math.sin(a) * o.r, angle);
+        const tw = 0.5 + 0.5 * Math.sin(time * 3 + o.ph);
+        const size = o.size * p.scale * (0.8 + 0.5 * tw);
+        ctx.globalAlpha = (0.35 + 0.5 * tw) * 0.85;
+        ctx.drawImage(sprites[o.c], p.x - size / 2, p.y - size / 2, size, size);
+      }
+    }
+
+    function drawPetals(dt) {
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.fillStyle = '#ffb6d9';
+      for (let i = 0; i < petals.length; i++) {
+        const p = petals[i];
+        p.y += p.sp * dt * 60;
+        p.x += Math.sin(p.sw + p.y * 0.01) * 0.5;
+        p.rot += p.rs;
+        if (p.y > H + 10) { p.y = -10; p.x = rand(W); }
+        ctx.save();
+        ctx.translate(p.x, p.y);
+        ctx.rotate(p.rot);
+        ctx.globalAlpha = 0.5;
+        ctx.beginPath();
+        ctx.ellipse(0, 0, p.r, p.r * 0.55, 0, 0, TAU);
+        ctx.fill();
+        ctx.restore();
+      }
+    }
+
+    function drawSnow(dt, time) {
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.fillStyle = '#fff0fa';
+      for (let i = 0; i < snows.length; i++) {
+        const s = snows[i];
+        s.y += s.sp * dt * 60;
+        s.x += Math.sin(s.sw + s.y * 0.01) * 0.35;
+        if (s.y > H + 4) { s.y = -4; s.x = rand(W); }
+        ctx.globalAlpha = 0.35 + 0.35 * (0.5 + 0.5 * Math.sin(time * 1.5 + s.ph));
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, s.r, 0, TAU);
+        ctx.fill();
+      }
+    }
+
+    function drawBursts(dt) {
+      ctx.globalCompositeOperation = 'lighter';
+      for (let i = bursts.length - 1; i >= 0; i--) {
+        const b = bursts[i];
+        b.x += b.vx * dt * 60;
+        b.y += b.vy * dt * 60;
+        b.vy += 0.04 * dt * 60;
+        b.vx *= 0.985; b.vy *= 0.985;
+        b.life -= b.decay * dt * 60;
+        if (b.life <= 0) { bursts.splice(i, 1); continue; }
+        const s = Math.max(1, b.size * b.life * 4);
+        ctx.globalAlpha = Math.min(1, b.life);
+        ctx.drawImage(sprites[b.c], b.x - s / 2, b.y - s / 2, s, s);
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    function drawStar(time, angle) {
+      const p = project(0, 7.7, 0, angle);
+      const pulse = 1 + 0.14 * Math.sin(time * 3.2);
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.translate(p.x, p.y);
+      ctx.scale(pulse, pulse);
+
+      const R = focal * 0.22;
+      const g = ctx.createRadialGradient(0, 0, 0, 0, 0, R);
+      g.addColorStop(0, 'rgba(255,245,252,1)');
+      g.addColorStop(0.12, 'rgba(255,160,210,0.75)');
+      g.addColorStop(0.4, 'rgba(255,60,150,0.22)');
+      g.addColorStop(1, 'rgba(255,40,120,0)');
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(0, 0, R, 0, TAU);
+      ctx.fill();
+
+      const rayLen = focal * 0.28;
+      for (let i = 0; i < 10; i++) {
+        ctx.save();
+        ctx.rotate(i * Math.PI / 5 + time * 0.55);
+        const len = rayLen * (i % 2 === 0 ? 1 : 0.62);
+        const lg = ctx.createLinearGradient(0, 0, len, 0);
+        lg.addColorStop(0, 'rgba(255,230,245,0.95)');
+        lg.addColorStop(1, 'rgba(255,90,180,0)');
+        ctx.fillStyle = lg;
+        ctx.beginPath();
+        ctx.moveTo(0, -3.6);
+        ctx.lineTo(len, 0);
+        ctx.lineTo(0, 3.6);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+      }
+
+      ctx.rotate(-time * 0.3);
+      const sr = focal * 0.042;
+      ctx.beginPath();
+      for (let k = 0; k < 10; k++) {
+        const r = k % 2 === 0 ? sr : sr * 0.42;
+        const a = k * Math.PI / 5 - Math.PI / 2;
+        const x = Math.cos(a) * r, y = Math.sin(a) * r;
+        if (k === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      ctx.closePath();
+      ctx.fillStyle = 'rgba(255,250,253,1)';
+      ctx.shadowColor = 'rgba(255,105,180,1)';
+      ctx.shadowBlur = 45;
+      ctx.fill();
+      ctx.restore();
+    }
+
+    function drawGreeting(time) {
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.globalAlpha = 1;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+
+      const size = Math.max(38, Math.min(92, W * 0.08));
+      const y = H * 0.86;
+      const shift = 0.5 + 0.5 * Math.sin(time * 0.9);
+
+      ctx.font = `italic bold ${size}px "Brush Script MT","Segoe Script","Snell Roundhand",cursive`;
+      const g = ctx.createLinearGradient(0, y - size / 2, 0, y + size / 2);
+      g.addColorStop(0, '#fff0f7');
+      g.addColorStop(0.35 + shift * 0.2, '#ff9ecb');
+      g.addColorStop(0.7, '#ff4fa3');
+      g.addColorStop(1, '#b3186b');
+      ctx.fillStyle = g;
+      ctx.shadowColor = 'rgba(255,80,170,0.8)';
+      ctx.shadowBlur = 28 + 12 * Math.sin(time * 2);
+      ctx.fillText('Merry Christmas', W / 2, y - size * 0.12);
+      ctx.shadowBlur = 0;
+
+      ctx.font = `italic 300 ${Math.max(16, size * 0.4)}px "Segoe Script","PingFang SC","Kaiti SC","KaiTi","Microsoft YaHei",cursive`;
+      ctx.fillStyle = 'rgba(255,216,236,0.92)';
+      ctx.shadowColor = 'rgba(255,120,190,0.7)';
+      ctx.shadowBlur = 14 + 6 * Math.sin(time * 1.4);
+      ctx.fillText('· 圣诞快乐 ·', W / 2, y + size * 0.52);
+      ctx.shadowBlur = 0;
+    }
+
+    // 交互：鼠标/触摸视差 + 点击烟花（自动兼容 Safari 及旧版 iOS 缺失 Pointer Events 的情况）
+    let targetMX = 0, targetMY = 0, mouseX = 0, mouseY = 0;
+
+    function setTarget(clientX, clientY) {
+      targetMX = (clientX / W - 0.5) * 2;
+      targetMY = (clientY / H - 0.5) * 2;
+    }
+
+    function spawnBurst(clientX, clientY) {
+      const n = 42;
+      for (let i = 0; i < n; i++) {
+        const a = Math.random() * TAU;
+        const sp = rand(6.5, 1.6);
+        bursts.push({
+          x: clientX, y: clientY,
+          vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 1.5,
+          life: 1, decay: rand(0.03, 0.014),
+          c: Math.floor(Math.random() * PALETTE.length),
+          size: rand(4.5, 1.6)
+        });
+      }
+    }
+
+    if (window.PointerEvent) {
+      window.addEventListener('pointermove', (e) => setTarget(e.clientX, e.clientY));
+      canvas.addEventListener('pointerdown', (e) => spawnBurst(e.clientX, e.clientY));
+    } else {
+      window.addEventListener('mousemove', (e) => setTarget(e.clientX, e.clientY));
+      canvas.addEventListener('mousedown', (e) => spawnBurst(e.clientX, e.clientY));
+      canvas.addEventListener('touchstart', (e) => {
+        if (e.touches && e.touches[0]) spawnBurst(e.touches[0].clientX, e.touches[0].clientY);
+        e.preventDefault();
+      }, { passive: false });
+      window.addEventListener('touchmove', (e) => {
+        if (e.touches && e.touches[0]) setTarget(e.touches[0].clientX, e.touches[0].clientY);
+        e.preventDefault();
+      }, { passive: false });
+    }
+
+    for (const rgb of PALETTE) sprites.push(makeSprite(rgb));
+
+    window.addEventListener('resize', resize);
+    resize();
+
+    let last = null;
+    let elapsed = 0;
+
+    function render(now) {
+      if (last === null) last = now;
+      const dt = Math.min(0.05, (now - last) / 1000);
+      last = now;
+      elapsed += dt;
+      const time = elapsed;
+
+      mouseX += (targetMX - mouseX) * 0.06;
+      mouseY += (targetMY - mouseY) * 0.06;
+      camY = -1 - mouseY * 0.6;
+
+      const intro = easeOutCubic(Math.min(1, time / 2.2));
+      const angle = reducedMotion ? 0 : time * 0.35 + Math.sin(time * 0.4) * 0.1 + mouseX * 0.28;
+
+      drawBackground(time, dt);
+      drawMeteors(time);
+      drawGroundGlow(time);
+      drawTree(time, angle, intro);
+      drawOrbits(time, angle);
+      drawSnow(dt, time);
+      drawPetals(dt);
+      drawStar(time, angle);
+      drawBursts(dt);
+      drawGreeting(time);
+
+      requestAnimationFrame(render);
+    }
+
+    requestAnimationFrame(render);
+  })();
+  </script>
+</body>
+</html>
